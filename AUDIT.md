@@ -34,3 +34,9 @@ Dependency consistency: pip check passed. Source parsing and command registratio
 No live Discord mutation was performed. Real server permissions, eligibility, limits and Discord position normalization still need a live test with two configured servers. External edits during a copy remain outside the transaction boundary; verification reports mismatches. An uncertain create still requires manual journal reconciliation because Discord provides no create idempotency key.
 
 The adapter depends on discord.py 2.7 internals for raw member role IDs, fresh guild cache binding, and bulk positions. Keep the 2.7 dependency constraint and regression tests when upgrading. HTTP trace support is documented in the [discord.py API](https://discordpy.readthedocs.io/en/stable/api.html#discord.Client); channel creation and overwrite rules are described in the [official Discord guild resource](https://github.com/discord/discord-api-docs/blob/main/developers/resources/guild.mdx).
+
+## Follow-up: automatic departure after snapshots
+
+The updated snapshot command was reviewed with a 65-test passing baseline. Fixed overlapping snapshot/departure and destination-copy operations by sharing the per-server operation lock. Notification transport failures now log the saved snapshot ID without reporting that the successful scan failed, and a failed departure warning cannot mask persistence success. Preview attachments and their caller-owned in-memory buffers are closed even when delivery fails.
+
+Added six regression tests for concurrent commands, simultaneous notification/departure failures, network errors, lock release after a failed scan and attachment cleanup. Full suite: 71 tests passed. No live Discord operations were performed.

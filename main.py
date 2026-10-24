@@ -231,7 +231,9 @@ async def snapshot_command(interaction: discord.Interaction):
                 logging.getLogger(__name__).warning("Snapshot %s saved; notification failed: %s",
                                                     snapshot["id"], type(error).__name__)
             finally:
+                # File.close restores a caller-owned BytesIO; close that buffer too.
                 attachment.close()
+                attachment.fp.close()
         finally:
             try:
                 await guild.leave()
