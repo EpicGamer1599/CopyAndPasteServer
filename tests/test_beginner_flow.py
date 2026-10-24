@@ -95,13 +95,13 @@ class BeginnerFlowTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "/scan.*re-invite"):
                 await main.copy_access(interaction(), None, None)
 
-    async def test_copy_plan_creates_nothing_and_offers_role_picker(self):
+    async def test_copy_plan_can_create_all_channels_without_manual_role_matching(self):
         with patch.object(main, "copy_access", AsyncMock(return_value=(self.snapshot, self.destination))), \
              patch.object(main, "reply", AsyncMock()) as send:
             await main.present_copy_plan(interaction(), None, None, {})
         view = send.call_args.kwargs["view"]
-        self.assertTrue(view.confirm.disabled)
-        self.assertIn("Match permissions", [item.label for item in view.children])
+        self.assertFalse(view.confirm.disabled)
+        self.assertIn("Use existing roles (optional)", [item.label for item in view.children])
         self.assertEqual(self.http.calls, [])
         self.assertIn("Gaming layout", send.call_args.kwargs["embed"].description)
 
@@ -114,7 +114,7 @@ class BeginnerFlowTests(unittest.IsolatedAsyncioTestCase):
             await main.present_copy_plan(interaction(), None, None, {})
         view = send.call_args.kwargs["view"]
         self.assertFalse(view.confirm.disabled)
-        self.assertNotIn("Match permissions", [item.label for item in view.children])
+        self.assertNotIn("Use existing roles (optional)", [item.label for item in view.children])
         self.assertEqual(self.http.calls, [])
 
     async def test_new_confirmation_rechecks_authorization_before_background_copy(self):
@@ -191,9 +191,9 @@ class BeginnerFlowTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "copy_access", AsyncMock(return_value=(self.snapshot, self.destination))), \
              patch.object(main, "reply", AsyncMock()) as send:
             await main.present_copy_plan(interaction(server_id=100), self.snapshot["id"], "200", {})
-        self.assertNotIn("Match permissions", [item.label for item in send.call_args.kwargs["view"].children])
+        self.assertNotIn("Use existing roles (optional)", [item.label for item in send.call_args.kwargs["view"].children])
         fields = send.call_args.kwargs["embed"].fields
-        self.assertTrue(any("receiving server" in field.value for field in fields))
+        self.assertTrue(any("automatically" in field.value for field in fields))
 
     async def test_skipping_roles_requires_a_new_plan_before_creation(self):
         view = self.matcher()

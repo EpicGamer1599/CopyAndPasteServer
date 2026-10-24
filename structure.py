@@ -54,7 +54,7 @@ def capture(guild, channels) -> dict:
         "limitations": [
             "Only channels visible to the bot were captured; client-specific views are unavailable.",
             "Threads/posts, messages, members, webhooks, invites and live stage sessions are excluded.",
-            "Role definitions, guild settings, integrations and channel followers are not copied.",
+            "Original server-wide role powers, guild settings, integrations and channel followers are not copied.",
             "Names/topics are template content; review them locally for sensitive text before sharing.",
             "Member overwrites are omitted without identifiers; affected channels are blocked from copying.",
             "Custom emoji assets/IDs and forum tag IDs cannot be transferred; tags get new IDs.",
@@ -237,7 +237,7 @@ def parse_role_map(value: str | None) -> dict[str, str]:
         if (not separator or any(not v.isascii() or not v.isdecimal()
                                  or not 0 < int(v) < 2**64 or str(int(v)) != v
                                  for v in (source, destination))):
-            raise ValueError("Leave the advanced roles option blank and use Match permissions to choose roles by name. "
+            raise ValueError("Leave the advanced roles option blank to create needed roles automatically. "
                              "For manual matching, use original_role_id:receiving_role_id pairs separated by commas.")
         if source in mapping or destination in mapping.values():
             raise ValueError("Each source and destination role may appear only once.")
@@ -245,7 +245,13 @@ def parse_role_map(value: str | None) -> dict[str, str]:
     return mapping
 
 
-def map_overwrites(entry, guild, roles, role_map):
+def missing_role_ids(snapshot, role_map):
+    return {overwrite["role_id"] for channel in snapshot["channels"]
+            for overwrite in channel["overwrites"]
+            if not overwrite["everyone"] and overwrite["role_id"] not in role_map}
+
+
+def map_overwrites(entry, guild, roles, role_map, pending_roles=()):
     if entry["member_overwrites_omitted"]:
         raise ValueError("Member-specific overwrites were omitted; channel blocked.")
     by_id = {str(r.id): r for r in roles}
@@ -254,6 +260,9 @@ def map_overwrites(entry, guild, roles, role_map):
         if overwrite["everyone"]:
             role = by_id.get(str(guild.id))
         else:
+            if overwrite["role_id"] in pending_roles and overwrite["role_id"] not in role_map:
+                # Preview only: execution creates and checkpoints real roles first.
+                continue
             role = by_id.get(role_map.get(overwrite["role_id"]))
             if role is None or role.id == guild.id or role.managed:
                 raise ValueError(f"Missing/unsafe mapping for source role {overwrite['role_id']}.")
@@ -272,9 +281,9 @@ def validate_bot_permissions(guild, overwrites=False):
         raise ValueError("Bot requires Manage Roles to apply permission overwrites.")
 
 
-def plan(snapshot, guild, roles, role_map, job):
+def plan(snapshot, guild, roles, role_map, job, pending_roles=()):
     """Return per-entry blockers. No Discord mutations happen in this function."""
-    if job.get("pending"):
+    if job.get("pending") or job.get("pending_role"):
         raise ValueError("This copy has an uncertain create request. Resolve its pending journal entry locally before resuming.")
     if job.get("snapshot_digest") and job["snapshot_digest"] != snapshot_digest(snapshot):
         raise ValueError("Snapshot changed since this copy began; restore the original snapshot.")
@@ -296,7 +305,7 @@ def plan(snapshot, guild, roles, role_map, job):
                 raise ValueError("Source parent category was inaccessible.")
             if c["settings"].get("bitrate", 0) > guild.bitrate_limit:
                 raise ValueError("Source bitrate exceeds destination bitrate limit.")
-            map_overwrites(c, guild, roles, role_map)
+            map_overwrites(c, guild, roles, role_map, pending_roles)
         except ValueError as error:
             blocked[c["id"]] = str(error)
     for c in snapshot["channels"]:
@@ -384,6 +393,7 @@ class Copier:
             valid = (job.get("snapshot_id") == snapshot["id"]
                      and job.get("destination_id") == str(guild.id)
                      and (job.get("pending") is None or isinstance(job.get("pending"), str))
+                     and (job.get("pending_role") is None or isinstance(job.get("pending_role"), str))
                      and isinstance(job.get("created"), dict)
                      and isinstance(job.get("role_map"), dict)
                      and all(isinstance(k, str) and isinstance(v, str) for k, v in job["role_map"].items())
@@ -397,7 +407,7 @@ class Copier:
             return {"snapshot_id": snapshot["id"], "destination_id": str(guild.id),
                     "created": {}, "pending": None, "role_map": {}, "report": []}
 
-    async def copy(self, snapshot, guild, role_map, reason):
+    async def copy(self, snapshot, guild, role_map, reason, *, automatic_role_names=None):
         lock = self.locks.setdefault(guild.id, asyncio.Lock())
         if lock.locked():
             raise ValueError("Another snapshot or copy in this destination is running; retry later.")
@@ -405,7 +415,9 @@ class Copier:
             roles = await guild.fetch_roles()
             guild._roles = {role.id: role for role in roles}
             job = self.job(snapshot, guild)
-            blocked = plan(snapshot, guild, roles, role_map, job)
+            role_map = {**job["role_map"], **role_map} if automatic_role_names is not None else dict(role_map)
+            missing_roles = missing_role_ids(snapshot, role_map) if automatic_role_names is not None else set()
+            blocked = plan(snapshot, guild, roles, role_map, job, missing_roles)
             current = {c.id: c for c in await guild.fetch_channels()}
             for source_id, destination_id in job["created"].items():
                 if destination_id not in current:
@@ -429,6 +441,38 @@ class Copier:
                 job["report"] = report
                 self.store.write("jobs", self.key(snapshot, guild), job)
             save()
+            for source_role_id in sorted(missing_roles):
+                job["pending_role"] = source_role_id
+                save()
+                name = automatic_role_names.get(source_role_id, f"Imported role {source_role_id}")
+                try:
+                    with guarded_create():
+                        role = await guild.create_role(name=name[:100], permissions=discord.Permissions.none(),
+                                                       mentionable=False, hoist=False, reason=reason)
+                except asyncio.CancelledError:
+                    report.append(f"Role creation {source_role_id} interrupted; outcome uncertain; reconcile pending_role before resuming.")
+                    save()
+                    raise
+                except Exception as error:
+                    definite = ((isinstance(error, discord.HTTPException) and 400 <= error.status < 500
+                                 and error.status != 408) or isinstance(error, discord.RateLimited))
+                    if definite:
+                        job["pending_role"] = None
+                    report.insert(0, f"Created/tracked {len(job['created'])}/{len(snapshot['channels'])} entries.")
+                    report.append(f"ROLE FAILED {source_role_id}: {api_error(error)}; "
+                                  + ("fix bot permissions/server role limits and retry /copy" if definite
+                                     else "outcome uncertain; reconcile pending_role before resuming"))
+                    save()
+                    return "\n".join(report)
+                role_map[source_role_id] = str(role.id)
+                job["role_map"] = dict(role_map)
+                job["pending_role"] = None
+                roles.append(role)
+                guild._roles[role.id] = role
+                report.append(f"Created empty role {role.name} for channel permissions. No members or server-wide permissions were copied.")
+                save()
+            if missing_roles:
+                blocked = plan(snapshot, guild, roles, role_map, job)
             for c in snapshot["channels"]:
                 source_id = c["id"]
                 if source_id in blocked:

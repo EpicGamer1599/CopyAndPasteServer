@@ -18,7 +18,7 @@ from friendly import (blocker_text, error_text, report_summary, safe, template_e
                       template_label, template_name, totals)
 from safe_http import create_trace
 from storage import Store, acquire_process_lock
-from structure import Copier, api_error, capture, counts, parse_role_map, plan, preview, validate_snapshot
+from structure import Copier, api_error, capture, counts, missing_role_ids, parse_role_map, plan, preview, validate_snapshot
 
 ROOT = Path(__file__).resolve().parent
 store = Store(ROOT)
@@ -256,7 +256,7 @@ async def help_command(interaction: discord.Interaction):
         description="A **template** is a saved list of categories, channels and their settings. You must be an administrator in both servers.")
     embed.add_field(name="1. Save the original server", value="Invite CAPS there and use `/scan`. You can give the layout a name. CAPS saves it, then leaves automatically.", inline=False)
     embed.add_field(name="2. Invite CAPS back once", value=f"{invite_link()} to the original server so I can check your administrator access. **Do not scan again** — that would make me leave again.", inline=False)
-    embed.add_field(name="3. Copy into your other server", value="Invite CAPS to the receiving server. Run `/copy` **there**, choose your template, and review the plan. If asked, match the original roles to roles in this server using the picker. Press **Create channels** to start.", inline=False)
+    embed.add_field(name="3. Copy into your other server", value="Invite CAPS to the receiving server. Run `/copy` **there** and press **Create channels**. Missing roles are created automatically so channel permissions come over too. You do not need to match roles.", inline=False)
     embed.add_field(name="Other commands", value="`/templates` — see saved layouts\n`/preview` — see the channels in a layout\n`/delete` — delete a saved layout after confirming", inline=False)
     embed.set_footer(text="Existing channels stay. Messages and members are never copied. Only /scan makes CAPS leave.")
     await reply(interaction, None, embed=embed)
@@ -448,7 +448,7 @@ async def copy_access(interaction, snapshot_id, destination_id):
 @app_commands.rename(snapshot_id="template", destination_id="server", role_map="roles")
 @app_commands.describe(snapshot_id="Choose a saved layout. Leave blank to use the latest one you can access.",
                        destination_id="Usually leave blank: copies into the server you are in.",
-                       role_map="Advanced: role ID pairs. Usually leave blank and use the Match permissions button.")
+                       role_map="Optional advanced mapping to existing roles. Leave blank to create the needed roles automatically.")
 @app_commands.autocomplete(snapshot_id=snapshot_choices, destination_id=destination_choices)
 async def copy_structure_command(interaction: discord.Interaction, snapshot_id: str | None = None,
                                  destination_id: str | None = None, role_map: str | None = None):
@@ -463,7 +463,8 @@ async def present_copy_plan(interaction, snapshot_id, destination_id, mapping):
     roles = await destination.fetch_roles()
     job = copier.job(snapshot, destination)
     mapping = {**job.get("role_map", {}), **mapping}
-    blocked = plan(snapshot, destination, roles, mapping, job)
+    missing = sorted(missing_role_ids(snapshot, mapping))
+    blocked = plan(snapshot, destination, roles, mapping, job, pending_roles=missing)
     new = [c for c in snapshot["channels"] if c["id"] not in job["created"] and c["id"] not in blocked]
     planned = {**snapshot, "channels": new}
     digest = fingerprint(snapshot)
@@ -482,14 +483,15 @@ async def present_copy_plan(interaction, snapshot_id, destination_id, mapping):
              f"Will create: {counts(planned)} ({len(new)} entries).",
              f"Already tracked: {len(job['created'])}. Blocked: {len(blocked)}.",
              "Existing channels are kept. Copied entries are appended within Discord's ordering groups.",
-             "Explicit role mappings assert equivalent access intent; review destination role membership yourself.",
-             "@everyone is mapped automatically. No other roles are matched by name or ID.",
+             f"Will automatically create {len(missing)} missing roles for channel permissions. New roles have no members or server-wide permissions.",
+             "@everyone is mapped automatically. Existing roles are reused only through saved or explicit mappings.",
              "", *[f"BLOCKED {key}: {value}" for key, value in blocked.items()],
              "", preview(snapshot), "", "Previous copy report:", *job.get("report", [])]
     embed = discord.Embed(title="Review your copy", colour=discord.Colour.blurple(),
         description=f"**{safe(template_name(snapshot))}** → **{safe(destination.name)}**\nExisting channels will stay. Nothing is created until you confirm.")
     embed.add_field(name="New channels and categories", value=totals(planned), inline=False)
     embed.add_field(name="Already copied", value=str(len(job["created"])), inline=True)
+    embed.add_field(name="Roles created automatically", value=str(len(missing)), inline=True)
     embed.add_field(name="Cannot copy yet", value=str(len(blocked)), inline=True)
     if blocked:
         names = {c["id"]: c["name"] for c in snapshot["channels"]}
@@ -497,14 +499,12 @@ async def present_copy_plan(interaction, snapshot_id, destination_id, mapping):
         if len(blocked) > 4:
             reasons.append(f"…and {len(blocked) - 4} more. See the attached plan.")
         embed.add_field(name="What needs fixing", value="\n".join(reasons)[:1024], inline=False)
-    embed.add_field(name="Next step", value="Choose **Match permissions** if roles need matching. Otherwise choose **Create channels**. Buttons expire in two minutes.", inline=False)
+    embed.add_field(name="Next step", value="Press **Create channels**. Needed roles and channel permissions are copied automatically. Already copied channels are skipped. Buttons expire in two minutes.", inline=False)
     view = Confirmation(interaction.user.id, action, label="Create channels" if new else "Retry saved copy")
     if not new and not job["created"]:
         view.confirm.disabled = True
-    missing = sorted({o["role_id"] for c in snapshot["channels"] for o in c["overwrites"]
-                      if not o["everyone"] and o["role_id"] not in mapping})
     if missing and interaction.guild_id == destination.id:
-        match = discord.ui.Button(label="Match permissions", style=discord.ButtonStyle.primary)
+        match = discord.ui.Button(label="Use existing roles (optional)", style=discord.ButtonStyle.secondary)
         async def match_roles(click):
             if view.used:
                 await reply(click, "This menu was already used. Run /copy for a fresh plan.")
@@ -527,8 +527,6 @@ async def present_copy_plan(interaction, snapshot_id, destination_id, mapping):
                 await report_error(click, error)
         match.callback = guarded_match
         view.add_item(match)
-    elif missing:
-        embed.add_field(name="Easier permission matching", value="Run /copy in the receiving server to choose roles from a menu.", inline=False)
     await reply(interaction, None, embed=embed, file=text_file("\n".join(lines), "copy-plan.txt"), view=view)
 
 
@@ -548,7 +546,7 @@ class RoleMatcher(PrivateView):
                 f"The original server uses **{name}**. Which role should have the same channel access here?\n"
                 "Choose an existing role below. Create it in Server Settings → Roles first if needed. "
                 "Role names do not have to match; check who has the role before choosing.\n"
-                "**Skip remaining** keeps channels needing unmatched roles from being copied. No channels are created in this step.")
+                "**Create remaining roles** uses automatic role creation for the rest. No channels are created in this step.")
 
     async def apply_role(self, interaction, selected_id):
         if self.used or self.busy:
@@ -588,14 +586,14 @@ class RoleMatcher(PrivateView):
     async def choose_role(self, interaction, select):
         await self.apply_role(interaction, select.values[0].id)
 
-    @discord.ui.button(label="Skip remaining", row=1)
+    @discord.ui.button(label="Create remaining roles", row=1)
     async def skip_remaining(self, interaction, button):
         if self.used or self.busy:
             await reply(interaction, "This menu was already used. Run /copy for a fresh plan.")
             return
         self.used = True
         self.stop()
-        await interaction.response.edit_message(content="Unmatched roles will keep their channels from being copied. Review the plan below.", view=None)
+        await interaction.response.edit_message(content="Remaining roles will be created automatically. Press Create channels in the plan below.", view=None)
         await present_copy_plan(interaction, self.snapshot_id, self.destination_id, self.mapping)
 
     @discord.ui.button(label="Cancel", row=1)
@@ -610,8 +608,13 @@ class RoleMatcher(PrivateView):
 
 async def run_copy(interaction, snapshot, destination, mapping):
     try:
+        names = {}
+        if missing_role_ids(snapshot, {**copier.job(snapshot, destination)["role_map"], **mapping}):
+            source = bot.get_guild(int(snapshot["source"]["id"]))
+            if source is not None:
+                names = {str(role.id): role.name for role in await source.fetch_roles()}
         report = await copier.copy(snapshot, destination, mapping,
-                                   f"Structure template {snapshot['id']}")
+                                   f"Structure template {snapshot['id']}", automatic_role_names=names)
         try:
             title, message = report_summary(report)
             await reply(interaction, f"**{title}**\n{message}",

@@ -12,7 +12,7 @@ Already have CAPS running? Type **`/help`** in Discord for the same guide inside
 2. **CAPS saves the layout and leaves automatically.** Its reply shows what was saved and gives you a re-invite link.
 3. **Invite CAPS back to the original server once.** It needs to check that you still administer that server. **Do not scan again**: that would make it leave again.
 4. **Go to the receiving server.** Invite CAPS there, then run `/copy`. Choose your template from the suggestions. If you leave template blank, CAPS uses the newest accessible template from another server.
-5. **Review the plan.** It names both servers and shows what will be created or skipped. If it offers **Match permissions**, use the role picker to choose equivalent roles in this server.
+5. **Review the plan.** It names both servers and shows what will be created. Missing roles are created automatically for the channel permissions; no role-matching questions are required.
 6. **Press Create channels.** Nothing is created before you confirm. Wait for the result and read any skipped-channel notes.
 
 You usually do **not** need to type server IDs, template IDs or role IDs. `/copy` uses the server you are in. For multiple saved layouts, choose one by name and date.
@@ -32,20 +32,17 @@ The old `/snapshot`, `/snapshots`, `/copy_structure` and `/delete_snapshot` name
 
 All template commands require Administrator. Replies are private. **Only `/scan` makes the bot leave.**
 
-### Matching permissions
+### Permissions copy automatically
 
-Different servers have different roles. CAPS cannot assume that two roles with the same name have the same members or purpose.
+Press **Create channels** and CAPS creates the roles needed for the original channel permissions. Each new role gets its own destination ID, and CAPS uses that ID for the copied permission rules. `@everyone` maps to the receiving server's default role.
 
-When the plan shows channels needing role matches:
+The new roles have **no members and no server-wide permissions**. Only their channel access rules are copied. You can assign people to them afterward. CAPS never copies member lists or assumes that existing same-name roles are equivalent.
 
-1. Press **Match permissions**.
-2. CAPS names an original role, such as **Moderators**.
-3. Choose the role that should get the same channel access in the receiving server.
-4. Repeat for the remaining roles, then review the updated plan and confirm.
+Already have suitable roles? **Use existing roles (optional)** lets you choose those instead. Otherwise, ignore that button and just press Create channels.
 
-Create missing roles under **Server Settings → Roles** first. Check who has each role before selecting it. CAPS never creates roles or copies role memberships. The `@everyone` role is matched automatically.
+If an earlier copy stopped because roles were not matched, use `/copy` again with the **same template**. CAPS fills in the missing roles and resumes; completed channels are kept without duplication. You do not need to scan again.
 
-**Skip remaining** leaves channels needing those roles out of the copy. Channels with permissions assigned to individual people are also skipped, so private channels are not accidentally made public. The result explains what was skipped.
+Channels with permissions assigned to individual people are still skipped because their personal data is not saved. Discord may also reject unsupported channel types or settings; any actual failures are reported.
 
 ## Running your own bot
 
@@ -81,7 +78,7 @@ The bot needs access to every channel you want to scan. Restricted layouts may n
 | No saved layouts are available | Run `/scan` in the original server. If you already did, re-invite CAPS there once, then retry `/templates` in the receiving server. |
 | CAPS keeps leaving | `/scan` always leaves after saving. Re-invite it, then use `/copy` in the other server instead of scanning again. |
 | Administrator required | Ask the owner to grant you Administrator in both servers, or have an administrator perform the copy. |
-| Channels need matching roles | Press Match permissions and choose the equivalent receiving-server roles. |
+| An old report says Missing/unsafe mapping | Update and restart CAPS, then use `/copy` with the same template. Missing roles are now created automatically. |
 | Missing bot permissions | Check CAPS's role and private-channel permissions. Start with View Channels, Manage Channels and Manage Roles. |
 | Some channels were skipped | Read the plan/report. Community-only channel types, member-specific permissions and missing role matches can cause skips. |
 | A copy stopped partway through | Run `/copy` again with the same template. Saved role matches and completed channels are reused. Review the new plan before confirming. |

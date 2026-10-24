@@ -38,9 +38,23 @@ class FakeHTTP:
         self.position_failure = None
         self.edit_failure = None
         self.position_payloads = []
+        self.role_calls = []
+        self.role_failure = None
+        self.role_fail_after = 0
 
     async def get_roles(self, guild_id):
         return copy.deepcopy(self.roles)
+
+    async def create_role(self, guild_id, **kwargs):
+        if self.role_failure is not None and len(self.role_calls) >= self.role_fail_after:
+            error, self.role_failure = self.role_failure, None
+            raise error
+        self.role_calls.append(copy.deepcopy(kwargs))
+        role_id = max([int(item["id"]) for item in self.roles] + [2000]) + 1
+        payload = role(role_id)
+        payload.update({key: value for key, value in kwargs.items() if key != "reason"})
+        self.roles.append(payload)
+        return copy.deepcopy(payload)
 
     async def get_all_guild_channels(self, guild_id):
         return copy.deepcopy(self.channels)

@@ -52,7 +52,7 @@ def template_embed(snapshot):
 
 def blocker_text(reason):
     if "mapping" in reason or "colliding destination role" in reason:
-        return "Choose a matching role using Match permissions."
+        return "A previously matched role is missing or unusable. Ask the bot owner to check the saved role match. New roles are otherwise created automatically."
     if "Member-specific" in reason:
         return "This channel uses permissions for individual people. Change these to role permissions in the original server, then scan again."
     if "Parent category is blocked" in reason:
@@ -86,5 +86,5 @@ def report_summary(report):
                 "Read the attached report before retrying `/copy`; ask the bot owner for help if it mentions an uncertain result.")
     if "BLOCKED" in report:
         return ("Copy finished with skipped channels", "The channels that could be copied are ready. "
-                "Some were skipped; the attached report explains why. Use `/copy` again to fix permission matches and continue.")
+                "Some were skipped; the attached report explains why. Use `/copy` again to continue after fixing the reported issue.")
     return "Copy finished", "Your saved layout is ready in this server. The attached report lists any settings Discord could not copy."

@@ -1,4 +1,4 @@
-"""Prevent ambiguous channel POST retries while retaining Discord rate limiting."""
+"""Prevent ambiguous role/channel POST retries while retaining rate limiting."""
 from contextlib import contextmanager
 from contextvars import ContextVar
 
