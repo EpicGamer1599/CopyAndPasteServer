@@ -133,6 +133,8 @@ def validate_snapshot(snapshot):
         need(all(c in "0123456789abcdef" for c in snapshot["id"]))
         need(snowflake(snapshot["source"]["id"]))
         need(isinstance(snapshot["source"]["name"], str))
+        if "label" in snapshot:
+            need(isinstance(snapshot["label"], str) and 1 <= len(snapshot["label"].strip()) <= 60)
         need(isinstance(snapshot["created_at"], str))
         datetime.fromisoformat(snapshot["created_at"])
         need(isinstance(snapshot["limitations"], list))
@@ -235,7 +237,8 @@ def parse_role_map(value: str | None) -> dict[str, str]:
         if (not separator or any(not v.isascii() or not v.isdecimal()
                                  or not 0 < int(v) < 2**64 or str(int(v)) != v
                                  for v in (source, destination))):
-            raise ValueError("Use role_map source_role_id:destination_role_id,source_role_id:destination_role_id")
+            raise ValueError("Leave the advanced roles option blank and use Match permissions to choose roles by name. "
+                             "For manual matching, use original_role_id:receiving_role_id pairs separated by commas.")
         if source in mapping or destination in mapping.values():
             raise ValueError("Each source and destination role may appear only once.")
         mapping[source] = destination
